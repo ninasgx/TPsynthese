@@ -19,7 +19,20 @@ int main() {
     write(STDOUT_FILENO, exit_message, strlen(exit_message));
 
     while (1) {
-        write(STDOUT_FILENO, "enseash %% ", 10);
+        // Display the exit code or signal of the last executed command
+        write(STDOUT_FILENO, "enseash ", 8);
+        
+        if (WIFEXITED(status)) { // If it exited normally, show exit code
+            char exit_msg[50];
+            snprintf(exit_msg, sizeof(exit_msg), "[exit:%d] ", WEXITSTATUS(status));
+            write(STDOUT_FILENO, exit_msg, strlen(exit_msg));
+        } else if (WIFSIGNALED(status)) {  // If it was terminated by a signal, show the signal number
+            char sign_msg[50];
+            snprintf(sign_msg, sizeof(sign_msg), "[sign:%d] ", WTERMSIG(status));
+            write(STDOUT_FILENO, sign_msg, strlen(sign_msg));
+        }
+
+        write(STDOUT_FILENO, "% ", 2);
 
         if (fgets(command, MAX_INPUT_LENGTH, stdin) == NULL) {
             if (feof(stdin)) {  // Check EOF / Ctrl+D
@@ -33,7 +46,6 @@ int main() {
 
         command[strcspn(command, "\n")] = 0; // Remove the newline character
 
-        // Check if the user typed 'exit'
         if (strcmp(command, "exit") == 0) {
             write(STDOUT_FILENO, "Bye bye...\n", 11);
             exit(0); 
