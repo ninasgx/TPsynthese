@@ -7,9 +7,21 @@
 #include <time.h>  // For clock_gettime
 
 #define MAX_INPUT_LENGTH 1024
+#define MAX_ARGS 64 
+
+// Function to parse the command and separate it into arguments
+void parse_command(char *input, char **args) {
+    char *token = strtok(input, " ");  // Split input by spaces
+    int i = 0;
+    while (token != NULL && i < MAX_ARGS - 1) {
+        args[i++] = token;  // Store each argument
+        token = strtok(NULL, " ");  
+    }
+    args[i] = NULL; 
+}
 
 int main() {
-    char command[MAX_INPUT_LENGTH];
+    char command[MAX_INPUT_LENGTH];  
     pid_t pid;  // Child ID
     int status;  // Child exit status
     struct timespec start, end; 
@@ -22,10 +34,10 @@ int main() {
     write(STDOUT_FILENO, exit_message, strlen(exit_message));
 
     while (1) {
-        write(STDOUT_FILENO, "enseash% ", 8);
+        write(STDOUT_FILENO, "enseash% ", 9); 
 
         if (fgets(command, MAX_INPUT_LENGTH, stdin) == NULL) {
-            if (feof(stdin)) {  // Check EOF / Ctrl+D
+            if (feof(stdin)) {  // Check for EOF / Ctrl+D
                 write(STDOUT_FILENO, "Bye bye...\n", 11);
                 exit(0); 
             } else {
@@ -34,35 +46,35 @@ int main() {
             }
         }
 
-        command[strcspn(command, "\n")] = 0;
+        command[strcspn(command, "\n")] = 0; 
 
-        if (strcmp(command, "exit") == 0) {
+        if (strcmp(command, "exit") == 0) { 
             write(STDOUT_FILENO, "Bye bye...\n", 11);
             exit(0); 
         }
 
-        clock_gettime(CLOCK_MONOTONIC, &start);  // Start time here
+        clock_gettime(CLOCK_MONOTONIC, &start);
 
-        pid = fork(); // Create a child process to execute the command
+        pid = fork(); 
         
-        if (pid == -1) {
+        if (pid == -1) { 
             write(STDOUT_FILENO, "Fork failed.\n", 13);
             continue;
         }
 
-        if (pid == 0) {
-            char *args[] = {command, NULL}; 
-            if (execvp(command, args) == -1) {
-                write(STDOUT_FILENO, "Command execution failed.\n", 25);
-                exit(1);
+        if (pid == 0) { 
+            char *args[MAX_ARGS];  
+            parse_command(command, args); 
+            if (execvp(args[0], args) == -1) {  
+                write(STDOUT_FILENO, "Command execution failed.\n", 26);
+                exit(1); 
             }
-        } else {
+        } else {  
             waitpid(pid, &status, 0); // Parent waits for the child process to finish
         }
 
         clock_gettime(CLOCK_MONOTONIC, &end); // End time here
 
-       // Display the exit code or signal of the last executed command
         if (WIFEXITED(status)) { // If it exited normally, show exit code
             char exit_msg[50];
             snprintf(exit_msg, sizeof(exit_msg), "[exit:%d", WEXITSTATUS(status));
@@ -72,8 +84,6 @@ int main() {
             snprintf(sign_msg, sizeof(sign_msg), "[sign:%d", WTERMSIG(status));
             write(STDOUT_FILENO, sign_msg, strlen(sign_msg));
         }
-
-        clock_gettime(CLOCK_MONOTONIC, &end); // End time here
 
         elapsed_ms = (end.tv_sec - start.tv_sec) * 1000 + (end.tv_nsec - start.tv_nsec) / 1000000; // Calculate elapsed time in milliseconds
 
