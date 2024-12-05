@@ -12,3 +12,6 @@ To support background execution, we modified our function that executes commands
 Finally, we tested various commands, including handling pipes and redirections, ensuring that our shell functions as intended.
 
 All those steps can be seen by the history of commits made into the branch. Each commit was a step to finish the proposed laboratory. 
+
+
+**Students: CONRADO Alamo and GONÇALVES Sabrina**
