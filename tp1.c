@@ -14,6 +14,15 @@
 const int NANOSECONDS_IN_MILLISECOND = 1000000; 
 const int MILLISECONDS_IN_SECOND = 1000;
 
+void display_welcome_message();
+void display_prompt();
+void display_exit_message();
+char *read_command();
+int is_exit_command(const char *command);
+void parse_command(const char *input, char **args, char **input_file, char **output_file, char **pipe_cmd);
+void execute_command(char *command);
+void execute_pipe(char *cmd1, char *cmd2);
+
 void display_welcome_message() {
     const char *welcome_message = "Welcome to ENSEA (Alamo and Sabrina) Tiny Shell.\n";
     write(STDOUT_FILENO, welcome_message, strlen(welcome_message));
@@ -49,18 +58,24 @@ int is_exit_command(const char *command) {
     return strcmp(command, "exit") == 0;
 }
 
-void parse_command(const char *input, char **args, char **input_file, char **output_file) {
+void parse_command(const char *input, char **args, char **input_file, char **output_file, char **pipe_cmd) {
     *input_file = NULL;
     *output_file = NULL;
+    *pipe_cmd = NULL;
     char *token = strtok((char *)input, " ");
     int i = 0;
+    
     while (token != NULL && i < MAX_ARGS - 1) {
         if (strcmp(token, "<") == 0) {
             token = strtok(NULL, " ");
             *input_file = token;
         } else if (strcmp(token, ">") == 0) {
             token = strtok(NULL, " ");
-            *output_file = token; 
+            *output_file = token;
+        } else if (strcmp(token, "|") == 0) {
+            token = strtok(NULL, " ");
+            *pipe_cmd = token;
+            break;
         } else {
             args[i++] = token;
         }
@@ -73,8 +88,14 @@ void execute_command(char *command) {
     char *args[MAX_ARGS];
     char *input_file = NULL;
     char *output_file = NULL;
+    char *pipe_cmd = NULL;
 
-    parse_command(command, args, &input_file, &output_file);
+    parse_command(command, args, &input_file, &output_file, &pipe_cmd);
+
+    if (pipe_cmd) {
+        execute_pipe(command, pipe_cmd);
+        return;
+    }
 
     if (input_file) {
         int fd_in = open(input_file, O_RDONLY);
@@ -100,6 +121,49 @@ void execute_command(char *command) {
         perror("Command execution failed");
         exit(1);
     }
+}
+
+void execute_pipe(char *cmd1, char *cmd2) {
+    int pipefd[2];
+    pid_t pid1, pid2;
+
+    if (pipe(pipefd) == -1) {
+        perror("pipe");
+        return;
+    }
+
+    pid1 = fork();
+    if (pid1 == 0) {
+        close(pipefd[0]);
+        dup2(pipefd[1], STDOUT_FILENO); 
+        close(pipefd[1]); 
+
+        char *args[MAX_ARGS];
+        char *input_file, *output_file, *unused;
+        parse_command(cmd1, args, &input_file, &output_file, &unused);
+        execvp(args[0], args); 
+        perror("execvp"); 
+        exit(1);
+    }
+
+    pid2 = fork();
+    if (pid2 == 0) {
+        close(pipefd[1]); 
+        dup2(pipefd[0], STDIN_FILENO); 
+        close(pipefd[0]); 
+
+        char *args[MAX_ARGS];
+        char *input_file, *output_file, *unused;
+        parse_command(cmd2, args, &input_file, &output_file, &unused);
+        execvp(args[0], args);
+        perror("execvp");
+        exit(1);
+    }
+
+    close(pipefd[0]); 
+    close(pipefd[1]);
+    waitpid(pid1, NULL, 0); 
+    waitpid(pid2, NULL, 0);
 }
 
 void run_shell() {
