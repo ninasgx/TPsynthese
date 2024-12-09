@@ -2,30 +2,72 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <netdb.h>
 
 #define BUFFER_SIZE 1024
 
+void write_message(int fd, const char *message) {
+    write(fd, message, strlen(message));
+}
+
+int resolve_address(const char *server_address, struct addrinfo **result) {
+    struct addrinfo hints;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_UNSPEC;      // IPv4 or IPv6
+    hints.ai_socktype = SOCK_DGRAM;   // Use UDP
+
+    int s = getaddrinfo(server_address, "69", &hints, result);
+    if (s != 0) {
+        char error_msg[BUFFER_SIZE];
+        snprintf(error_msg, BUFFER_SIZE, "getaddrinfo: %s\n", gai_strerror(s));
+        write_message(STDERR_FILENO, error_msg);
+        return -1;
+    }
+    return 0;
+}
+
+int connect_to_server(struct addrinfo *result) {
+    struct addrinfo *p;
+    for (p = result; p != NULL; p = p->ai_next) {
+        int sockfd = socket(p->ai_family, p->ai_socktype, p->ai_protocol);
+        if (sockfd == -1) {
+            continue;
+        }
+
+        if (connect(sockfd, p->ai_addr, p->ai_addrlen) == -1) {
+            close(sockfd);
+            continue;
+        }
+
+        return sockfd;
+    }
+    return -1;
+}
+
 int main(int argc, char *argv[]) {
-    if (argc != 3) {
-        char error_msg[] = "Usage: ";
-        write(STDERR_FILENO, error_msg, strlen(error_msg));
-        write(STDERR_FILENO, argv[0], strlen(argv[0]));
-        char usage[] = " <host> <file>\n";
-        write(STDERR_FILENO, usage, strlen(usage));
-        exit(1);
+    if (argc != 2) {
+        write_message(STDERR_FILENO, "Usage: ./puttftp <server_address>\n");
+        exit(EXIT_FAILURE);
     }
 
-    char *host = argv[1];
-    char *file = argv[2];
+    struct addrinfo *result;
+    
+    if (resolve_address(argv[1], &result) != 0) {
+        exit(EXIT_FAILURE);
+    }
 
-    char buffer[BUFFER_SIZE];
-    int len;
+    int sockfd = connect_to_server(result);
+    
+    if (sockfd == -1) {
+        write_message(STDERR_FILENO, "Failed to connect to any address\n");
+        freeaddrinfo(result); 
+        exit(EXIT_FAILURE);
+    }
 
-    len = snprintf(buffer, BUFFER_SIZE, "Host: %s\n", host);
-    write(STDOUT_FILENO, buffer, len);
+    write_message(STDOUT_FILENO, "Successfully connected to the server\n");
 
-    len = snprintf(buffer, BUFFER_SIZE, "File: %s\n", file);
-    write(STDOUT_FILENO, buffer, len);
+    freeaddrinfo(result);
 
+    close(sockfd); 
     return 0;
 }
