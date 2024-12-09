@@ -10,9 +10,19 @@
 
 #define MAX_INPUT_LENGTH 1024
 #define MAX_ARGS 64
+#define MAX_BG_PROCESSES 100
 
 const int NANOSECONDS_IN_MILLISECOND = 1000000; 
 const int MILLISECONDS_IN_SECOND = 1000;
+
+typedef struct { //For background processes
+    pid_t pid;               
+    int job_id;             
+    char command[MAX_INPUT_LENGTH]; 
+} BackgroundProcess;
+
+BackgroundProcess bg_processes[MAX_BG_PROCESSES]; // Array to hold 
+int bg_count = 0; 
 
 void display_welcome_message();
 void display_prompt();
@@ -22,6 +32,7 @@ int is_exit_command(const char *command);
 void parse_command(const char *input, char **args, char **input_file, char **output_file, char **pipe_cmd);
 void execute_command(char *command);
 void execute_pipe(char *cmd1, char *cmd2);
+void check_background_processes();
 
 void display_welcome_message() {
     const char *welcome_message = "Welcome to ENSEA (Alamo and Sabrina) Tiny Shell.\n";
@@ -35,7 +46,8 @@ void display_prompt() {
 }
 
 void display_exit_message() {
-    write(STDOUT_FILENO, "Bye bye...\n", 11);
+    const char *exit_message = "Bye bye...\n";
+    write(STDOUT_FILENO, exit_message, strlen(exit_message));
 }
 
 char *read_command() {
@@ -92,121 +104,104 @@ void execute_command(char *command) {
 
     parse_command(command, args, &input_file, &output_file, &pipe_cmd);
 
-    if (pipe_cmd) {
-        execute_pipe(command, pipe_cmd);
-        return;
+    if (strcmp(args[0], "exit") == 0) {
+        exit(0);
     }
 
-    if (input_file) {
-        int fd_in = open(input_file, O_RDONLY);
-        if (fd_in == -1) {
-            perror("open input file");
-            exit(1);
+    int background = 0;
+
+    int arg_count = 0;
+    while (args[arg_count] != NULL) {
+        arg_count++;
+    }
+
+    if (arg_count > 0 && strcmp(args[arg_count - 1], "&") == 0) {
+        args[arg_count - 1] = NULL; 
+        background = 1;  // 1 sets a flag for background execution
+    }
+
+    pid_t pid = fork();
+    
+    if (pid == 0) { 
+        if (input_file) {
+            int fd_in = open(input_file, O_RDONLY);
+            if (fd_in == -1) {
+                perror("open input file");
+                exit(1);
+            }
+            dup2(fd_in, STDIN_FILENO);
+            close(fd_in);
         }
-        dup2(fd_in, STDIN_FILENO); 
-        close(fd_in);
-    }
-
-    if (output_file) {
-        int fd_out = open(output_file, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-        if (fd_out == -1) {
-            perror("open output file");
-            exit(1);
+        
+        if (output_file) {
+            int fd_out = open(output_file, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+            if (fd_out == -1) {
+                perror("open output file");
+                exit(1);
+            }
+            dup2(fd_out, STDOUT_FILENO);
+            close(fd_out);
         }
-        dup2(fd_out, STDOUT_FILENO);
-        close(fd_out);
-    }
 
-    if (execvp(args[0], args) == -1) {
-        perror("Command execution failed");
-        exit(1);
-    }
-}
-
-void execute_pipe(char *cmd1, char *cmd2) {
-    int pipefd[2];
-    pid_t pid1, pid2;
-
-    if (pipe(pipefd) == -1) {
-        perror("pipe");
-        return;
-    }
-
-    pid1 = fork();
-    if (pid1 == 0) {
-        close(pipefd[0]);
-        dup2(pipefd[1], STDOUT_FILENO); 
-        close(pipefd[1]); 
-
-        char *args[MAX_ARGS];
-        char *input_file, *output_file, *unused;
-        parse_command(cmd1, args, &input_file, &output_file, &unused);
-        execvp(args[0], args); 
-        perror("execvp"); 
-        exit(1);
-    }
-
-    pid2 = fork();
-    if (pid2 == 0) {
-        close(pipefd[1]); 
-        dup2(pipefd[0], STDIN_FILENO); 
-        close(pipefd[0]); 
-
-        char *args[MAX_ARGS];
-        char *input_file, *output_file, *unused;
-        parse_command(cmd2, args, &input_file, &output_file, &unused);
         execvp(args[0], args);
         perror("execvp");
         exit(1);
+    } else { 
+        if (background) {
+            bg_processes[bg_count].pid = pid;
+            bg_processes[bg_count].job_id = bg_count + 1; 
+            strcpy(bg_processes[bg_count].command, command);
+            bg_count++;
+            dprintf(STDOUT_FILENO, "[%d] %d\n", bg_processes[bg_count - 1].job_id, pid);
+        } else {
+            waitpid(pid, NULL, 0);
+        }
     }
+}
 
-    close(pipefd[0]); 
-    close(pipefd[1]);
-    waitpid(pid1, NULL, 0); 
-    waitpid(pid2, NULL, 0);
+void check_background_processes() {
+    for (int i = 0; i < bg_count; i++) {
+        int status;
+        pid_t result = waitpid(bg_processes[i].pid, &status, WNOHANG);
+        
+        if (result == 0) {
+            continue;
+        } else if (result == -1) {
+            perror("waitpid");
+        } else {
+            if (WIFEXITED(status)) {
+                dprintf(STDOUT_FILENO, "[%d] %s: exited with status %d\n", bg_processes[i].job_id, bg_processes[i].command, WEXITSTATUS(status));
+            } else if (WIFSIGNALED(status)) {
+                dprintf(STDOUT_FILENO, "[%d] %s: killed by signal %d\n", bg_processes[i].job_id, bg_processes[i].command, WTERMSIG(status));
+            }
+            bg_processes[i] = bg_processes[--bg_count]; 
+            i--; 
+        }
+    }
 }
 
 void run_shell() {
     char *command;
-    pid_t pid;
-    int status;
     struct timespec start, end;
-    long elapsed_ms;
-
+    
     while (1) {
         display_prompt();
         command = read_command();
+        
         if (command == NULL) continue;
-
-        if (is_exit_command(command)) {
-            display_exit_message();
-            exit(0);
-        }
 
         clock_gettime(CLOCK_MONOTONIC, &start);
 
-        pid = fork();
+        execute_command(command);
 
-        if (pid == -1) {
-            write(STDOUT_FILENO, "Fork failed.\n", 13);
-            continue;
-        }
+        check_background_processes(); 
+        
+        clock_gettime(CLOCK_MONOTONIC, &end); 
+        
+        long elapsed_ms = (end.tv_sec - start.tv_sec) * MILLISECONDS_IN_SECOND +
+                          (end.tv_nsec - start.tv_nsec) / NANOSECONDS_IN_MILLISECOND;
 
-        if (pid == 0) {
-            execute_command(command);
-        } else {
-            waitpid(pid, &status, 0);
-            clock_gettime(CLOCK_MONOTONIC, &end);
-
-            elapsed_ms = (end.tv_sec - start.tv_sec) * MILLISECONDS_IN_SECOND +
-                         (end.tv_nsec - start.tv_nsec) / NANOSECONDS_IN_MILLISECOND;
-
-            if (WIFEXITED(status)) {
-                dprintf(STDOUT_FILENO, "[exit:%d|%ldms] ", WEXITSTATUS(status), elapsed_ms);
-            } else if (WIFSIGNALED(status)) {
-                dprintf(STDOUT_FILENO, "[sign:%d|%ldms] ", WTERMSIG(status), elapsed_ms);
-            }
-        }
+        dprintf(STDOUT_FILENO, "[exit: %ldms] \n", elapsed_ms); 
     }
 }
 
