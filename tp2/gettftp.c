@@ -5,9 +5,13 @@
 #include <sys/socket.h>
 #include <netdb.h>
 #include <unistd.h>
+#include <fcntl.h>
 
-#define BUFFER_SIZE 516 
-#define DATA_SIZE 512   
+#define BUFFER_SIZE 516
+#define DATA_SIZE 512
+#define TFTP_OPCODE_SIZE 2
+#define TFTP_NULL_TERMINATOR 1
+// RRQ/WRQ format: [2 bytes opcode][filename + '\0'][mode + '\0']
 
 void write_message(int fd, const char *message) {
     write(fd, message, strlen(message));
@@ -16,92 +20,70 @@ void write_message(int fd, const char *message) {
 int resolve_address(const char *server_address, struct addrinfo **result) {
     struct addrinfo hints;
     memset(&hints, 0, sizeof(hints));
-    hints.ai_family = AF_UNSPEC;      // IPv4 or IPv6
-    hints.ai_socktype = SOCK_DGRAM;   // Use UDP
+    hints.ai_family = AF_UNSPEC;      
+    hints.ai_socktype = SOCK_DGRAM;   
 
-    int s = getaddrinfo(server_address, "69", &hints, result);
-    if (s != 0) {
+    int status = getaddrinfo(server_address, "1069", &hints, result);
+    if (status != 0) {
         char error_msg[BUFFER_SIZE];
-        snprintf(error_msg, BUFFER_SIZE, "getaddrinfo: %s\n", gai_strerror(s));
+        snprintf(error_msg, BUFFER_SIZE, "getaddrinfo: %s\n", gai_strerror(status));
         write_message(STDERR_FILENO, error_msg);
         return -1;
     }
     return 0;
 }
 
-int connect_to_server(struct addrinfo *result) {
-    struct addrinfo *p;
-    for (p = result; p != NULL; p = p->ai_next) {
-        int sockfd = socket(p->ai_family, p->ai_socktype, p->ai_protocol);
-        if (sockfd == -1) {
-            continue; 
-        }
-
-        if (connect(sockfd, p->ai_addr, p->ai_addrlen) == -1) {
-            close(sockfd);
-            continue;
-        }
-
-        return sockfd;
-    }
-    
-    return -1;
-}
-
 void build_rrq(char *buffer, const char *filename, const char *mode) {
     uint16_t opcode = htons(1); 
-    size_t len = 0;
+    size_t offset = 0;
 
-    memcpy(buffer + len, &opcode, sizeof(opcode));
-    len += sizeof(opcode);
-    strcpy(buffer + len, filename);
-    len += strlen(filename) + 1;
-    strcpy(buffer + len, mode);
-    len += strlen(mode) + 1;
-
-    write(STDOUT_FILENO, "RRQ packet built\n", 17);
+    memcpy(buffer + offset, &opcode, TFTP_OPCODE_SIZE);
+    offset += TFTP_OPCODE_SIZE;
+    strcpy(buffer + offset, filename);
+    offset += strlen(filename) + TFTP_NULL_TERMINATOR;
+    strcpy(buffer + offset, mode);
+    offset += strlen(mode) + TFTP_NULL_TERMINATOR;
+    // RRQ packet built: opcode + filename+'\0' + mode+'\0'
 }
 
 void send_rrq_and_receive(const char *server, const char *filename) {
-    int sock;
-    struct addrinfo hints, *res;
+    struct addrinfo *res;
     char buffer[BUFFER_SIZE];
-    FILE *file;
-    ssize_t received, sent;
-    uint16_t block = 0;
+    int file_fd;
+    ssize_t received_bytes, sent_bytes;
+    uint16_t current_block = 0;
 
-    memset(&hints, 0, sizeof(hints));
-    hints.ai_family = AF_INET;
-    hints.ai_socktype = SOCK_DGRAM;
-    hints.ai_protocol = IPPROTO_UDP;
-
-    if (getaddrinfo(server, "69", &hints, &res) != 0) {
-        write(STDOUT_FILENO, "Error resolving server address\n", 31);
+    if (resolve_address(server, &res) != 0) {
         exit(EXIT_FAILURE);
     }
 
-    sock = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+    int sock = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
     if (sock == -1) {
-        write(STDOUT_FILENO, "Error creating socket\n", 23);
+        write_message(STDOUT_FILENO, "Error creating socket\n");
         freeaddrinfo(res);
         exit(EXIT_FAILURE);
     }
 
     build_rrq(buffer, filename, "octet");
 
-    sent = sendto(sock, buffer, strlen(filename) + strlen("octet") + 4 + 2, 0, res->ai_addr, res->ai_addrlen);
-    if (sent == -1) {
-        write(STDOUT_FILENO, "Error sending RRQ\n", 19);
+    // Total length: opcode(2 bytes) + filename+'\0' + mode+'\0'
+    size_t rrq_length = TFTP_OPCODE_SIZE 
+                        + (strlen(filename) + TFTP_NULL_TERMINATOR) 
+                        + (strlen("octet") + TFTP_NULL_TERMINATOR);
+
+    sent_bytes = sendto(sock, buffer, rrq_length, 0, res->ai_addr, res->ai_addrlen);
+    if (sent_bytes == -1) {
+        write_message(STDOUT_FILENO, "Error sending RRQ\n");
         close(sock);
         freeaddrinfo(res);
         exit(EXIT_FAILURE);
     }
 
-    write(STDOUT_FILENO, "RRQ sent to server\n", 20);
+    write_message(STDOUT_FILENO, "RRQ sent to server\n");
 
-    file = fopen(filename, "wb");
-    if (!file) {
-        write(STDOUT_FILENO, "Error creating local file\n", 26);
+    file_fd = open(filename, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    if (file_fd == -1) {
+        write_message(STDOUT_FILENO, "Error creating local file\n");
         close(sock);
         freeaddrinfo(res);
         exit(EXIT_FAILURE);
@@ -111,9 +93,9 @@ void send_rrq_and_receive(const char *server, const char *filename) {
     socklen_t sender_len = sizeof(sender_addr);
 
     while (1) {
-        received = recvfrom(sock, buffer, BUFFER_SIZE, 0, (struct sockaddr *)&sender_addr, &sender_len);
-        if (received == -1) {
-            write(STDOUT_FILENO, "Error receiving data\n", 22);
+        received_bytes = recvfrom(sock, buffer, BUFFER_SIZE, 0, (struct sockaddr *)&sender_addr, &sender_len);
+        if (received_bytes == -1) {
+            write_message(STDOUT_FILENO, "Error receiving data\n");
             break;
         }
 
@@ -125,52 +107,53 @@ void send_rrq_and_receive(const char *server, const char *filename) {
             memcpy(&block_num, buffer + 2, sizeof(uint16_t));
             block_num = ntohs(block_num);
 
-            if (block_num == block + 1) {
-                block++;
+            if (block_num == current_block + 1) {
+                current_block++;
                 char msg[128];
-                snprintf(msg, sizeof(msg), "Received DATA block %d, size %ld bytes\n", block, received - 4);
+                snprintf(msg, sizeof(msg), "Received DATA block %d, size %ld bytes\n", current_block, (long)(received_bytes - 4));
                 write(STDOUT_FILENO, msg, strlen(msg));
 
-                fwrite(buffer + 4, 1, received - 4, file);
+                write(file_fd, buffer + 4, received_bytes - 4);
 
                 uint16_t ack_opcode = htons(4);
-                uint16_t ack_block = htons(block);
+                uint16_t ack_block = htons(current_block);
                 memcpy(buffer, &ack_opcode, sizeof(uint16_t));
                 memcpy(buffer + 2, &ack_block, sizeof(uint16_t));
 
-                sent = sendto(sock, buffer, 4, 0, (struct sockaddr *)&sender_addr, sender_len);
-                if (sent == -1) {
-                    write(STDOUT_FILENO, "Error sending ACK\n", 18);
+                sent_bytes = sendto(sock, buffer, 4, 0, (struct sockaddr *)&sender_addr, sender_len);
+                if (sent_bytes == -1) {
+                    write_message(STDOUT_FILENO, "Error sending ACK\n");
                     break;
                 }
             }
-        } else if (opcode == 5) {  
-            write(STDOUT_FILENO, "Error received from server: ", 28);
-            write(STDOUT_FILENO, buffer + 4, strlen(buffer + 4));
-            write(STDOUT_FILENO, "\n", 1);
+
+        } else if (opcode == 5) {  // ERROR
+            write_message(STDOUT_FILENO, "Error received from server: ");
+            write_message(STDOUT_FILENO, buffer + 4);
+            write_message(STDOUT_FILENO, "\n");
             break;
         }
-        if (received < BUFFER_SIZE) {
-            write(STDOUT_FILENO, "File transfer complete\n", 24);
+
+        if (received_bytes < BUFFER_SIZE) {
+            write_message(STDOUT_FILENO, "File transfer complete\n");
             break;
         }
     }
 
-    fclose(file);
+    close(file_fd);
     close(sock);
     freeaddrinfo(res);
 }
 
-int main(int argc ,char *argv[]) {
-   if (argc != 3) {
-       write(STDOUT_FILENO, "Usage: gettftp <server> <file>\n", 31);
-       exit(EXIT_FAILURE);
-   }
+int main(int argc, char *argv[]) {
+    if (argc != 3) {
+        write_message(STDOUT_FILENO, "Usage: gettftp <server> <file>\n");
+        exit(EXIT_FAILURE);
+    }
 
-   const char *server = argv[1];
-   const char *file = argv[2];
+    const char *server = argv[1];
+    const char *file = argv[2];
+    send_rrq_and_receive(server, file);
 
-   send_rrq_and_receive(server, file);
-
-   return 0;
+    return 0;
 }
