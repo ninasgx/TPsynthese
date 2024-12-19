@@ -1,4 +1,4 @@
-# Synthesys Practical Work (tp1): ENSEA in the Shell
+**Synthesys Practical Work (tp1): ENSEA in the Shell**
 
 _Objectives : Develop a tiny shell, that displays exit codes and execution times of launched programs._
 
@@ -12,7 +12,8 @@ Finally, we tested various commands, including handling pipes and redirections, 
 
 All those steps can be seen by the history of commits made into the branch. Each commit was a step to finish the proposed laboratory. 
 
-# Synthesys Practical Work (folder tp2): TFTP Client
+
+**Synthesys Practical Work (folder tp2): TFTP Client**
 
 _Objectives: Develop a TFTP client using RFC specifications and Wireshark captures._
 
